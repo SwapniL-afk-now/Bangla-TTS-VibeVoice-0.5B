@@ -22,6 +22,9 @@ Copy the following blocks into your Kaggle Notebook cells.
 
 ### Cell 1: Installation
 ```python
+# Uninstall torchcodec if previously installed (causes FFmpeg issues)
+!pip uninstall -y torchcodec
+
 # Clone your modified repository
 !git clone https://github.com/YOUR_USERNAME/vibevoice-bangla.git
 %cd vibevoice-bangla
