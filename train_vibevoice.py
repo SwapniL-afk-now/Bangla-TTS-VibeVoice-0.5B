@@ -22,7 +22,7 @@ def main():
     parser.add_argument("--lora_rank", type=int, default=8)
     parser.add_argument("--lora_alpha", type=int, default=32)
     parser.add_argument("--lora_dropout", type=float, default=0.05)
-    parser.add_argument("--report_to", type=str, default="none", help="Reporting integration (wandb/tensorboard/none)")
+    parser.add_argument("--report_to", type=str, nargs="*", default=[], help="Reporting integration (wandb/tensorboard). Leave empty to disable.")
     args = parser.parse_args()
 
     # Load Config and Model
