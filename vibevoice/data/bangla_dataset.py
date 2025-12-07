@@ -4,7 +4,7 @@ from datasets import load_dataset, Audio
 import numpy as np
 
 class BanglaDataset(Dataset):
-    def __init__(self, dataset_name, split="train", config_name=None, processor=None, target_sr=24000):
+    def __init__(self, dataset_name, split="train", config_name=None, processor=None, target_sr=24000, speaker_ids=None):
         """
         Args:
             dataset_name: Name of the HF dataset.
@@ -12,6 +12,7 @@ class BanglaDataset(Dataset):
             config_name: Config name if any (e.g. 'bn').
             processor: VibeVoiceProcessor.
             target_sr: Target sampling rate (24kHz for VibeVoice).
+            speaker_ids: List of speaker IDs to filter (e.g., [0, 1]). None means all speakers.
         """
         self.processor = processor
         self.target_sr = target_sr
@@ -20,6 +21,15 @@ class BanglaDataset(Dataset):
         
         # Load dataset
         self.dataset = load_dataset(dataset_name, config_name, split=split)
+        
+        # Filter by speaker_id if specified
+        if speaker_ids is not None and "speaker_id" in self.dataset.column_names:
+            print(f"Filtering dataset for speaker_ids: {speaker_ids}")
+            original_len = len(self.dataset)
+            self.dataset = self.dataset.filter(lambda x: x["speaker_id"] in speaker_ids)
+            print(f"Filtered: {original_len} -> {len(self.dataset)} samples")
+        elif speaker_ids is not None:
+            print(f"Warning: speaker_ids specified but 'speaker_id' column not found in dataset")
         
         # Check for required columns
         if "audio" not in self.dataset.column_names:

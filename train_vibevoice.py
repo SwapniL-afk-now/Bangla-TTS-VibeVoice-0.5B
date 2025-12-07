@@ -25,6 +25,8 @@ def main():
     parser.add_argument("--report_to", type=str, nargs="*", default=[], help="Reporting integration (wandb/tensorboard). Leave empty to disable.")
     parser.add_argument("--training_stage", type=int, default=1, choices=[1, 2, 3, 4],
                         help="Training stage: 1=Latent Alignment, 2=Acoustic Adaptation, 3=Text-Speech Alignment, 4=End-to-End")
+    parser.add_argument("--speaker_ids", type=int, nargs="*", default=None,
+                        help="Filter dataset by speaker IDs (e.g., --speaker_ids 0 1)")
     args = parser.parse_args()
 
     print(f"=" * 60)
@@ -97,7 +99,8 @@ def main():
         dataset_name=args.dataset_name,
         config_name=args.dataset_config,
         split=args.dataset_split,
-        processor=processor
+        processor=processor,
+        speaker_ids=args.speaker_ids
     )
     
     # Data Collator (needs model for on-the-fly encoding)
