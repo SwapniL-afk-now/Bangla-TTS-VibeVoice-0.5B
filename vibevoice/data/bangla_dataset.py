@@ -19,50 +19,64 @@ class BanglaDataset(Dataset):
         self.target_sr = target_sr
         
         print(f"Loading HF dataset: {dataset_name} ({config_name if config_name else 'default'}) split={split}")
-        # Load without decoding audio to avoid torchcodec dependency
-        self.dataset = load_dataset(dataset_name, config_name, split=split)
         
-        # Keep audio as raw data (don't decode) - we'll handle it manually
-        # This prevents the datasets library from trying to use torchcodec
-        self.dataset.reset_format()
+        # Load dataset and immediately convert to list to avoid Audio feature decoding issues
+        hf_dataset = load_dataset(dataset_name, config_name, split=split)
         
-        if "audio" not in self.dataset.column_names:
-             raise ValueError(f"Dataset {dataset_name} does not have an 'audio' column.")
-             
-        if "text" not in self.dataset.features:
-             # Try to find a text column
-             candidates = ["sentence", "transcription", "normalized_text"]
-             found = False
-             for c in candidates:
-                 if c in self.dataset.features:
-                     self.dataset = self.dataset.rename_column(c, "text")
-                     found = True
-                     break
-             if not found:
-                 raise ValueError(f"Dataset {dataset_name} does not have a 'text' column and no alternatives found.")
+        # Check for required columns
+        if "audio" not in hf_dataset.column_names:
+            raise ValueError(f"Dataset {dataset_name} does not have an 'audio' column.")
+        
+        # Find text column
+        text_col = "text"
+        if "text" not in hf_dataset.column_names:
+            candidates = ["sentence", "transcription", "normalized_text"]
+            found = False
+            for c in candidates:
+                if c in hf_dataset.column_names:
+                    text_col = c
+                    found = True
+                    break
+            if not found:
+                raise ValueError(f"Dataset {dataset_name} does not have a 'text' column and no alternatives found.")
+        
+        # Convert to list of dicts to avoid Audio feature auto-decoding
+        print("Converting dataset to list (this may take a moment)...")
+        self.items = []
+        for item in hf_dataset:
+            self.items.append({
+                "text": item[text_col],
+                "audio": item["audio"]  # This will be a dict with 'path', 'bytes', or 'array'
+            })
+        print(f"Loaded {len(self.items)} items")
 
     def __len__(self):
-        return len(self.dataset)
+        return len(self.items)
 
     def __getitem__(self, idx):
-        item = self.dataset[idx]
+        item = self.items[idx]
         text = item['text']
         audio_data = item['audio']
         
         # audio_data is a dict with 'bytes', 'path', or 'array'
-        if 'array' in audio_data and audio_data['array'] is not None:
-            audio = np.array(audio_data['array'], dtype=np.float32)
-            sr = audio_data.get('sampling_rate', self.target_sr)
-        elif 'bytes' in audio_data and audio_data['bytes'] is not None:
-            # Decode from bytes using soundfile
-            audio, sr = sf.read(io.BytesIO(audio_data['bytes']))
-            audio = audio.astype(np.float32)
-        elif 'path' in audio_data and audio_data['path'] is not None:
-            # Load from path
-            audio, sr = sf.read(audio_data['path'])
-            audio = audio.astype(np.float32)
+        if isinstance(audio_data, dict):
+            if 'array' in audio_data and audio_data['array'] is not None:
+                audio = np.array(audio_data['array'], dtype=np.float32)
+                sr = audio_data.get('sampling_rate', self.target_sr)
+            elif 'bytes' in audio_data and audio_data['bytes'] is not None:
+                # Decode from bytes using soundfile
+                audio, sr = sf.read(io.BytesIO(audio_data['bytes']))
+                audio = audio.astype(np.float32)
+            elif 'path' in audio_data and audio_data['path'] is not None:
+                # Load from path
+                audio, sr = sf.read(audio_data['path'])
+                audio = audio.astype(np.float32)
+            else:
+                raise ValueError(f"Could not load audio from item {idx}")
         else:
-            raise ValueError(f"Could not load audio from item {idx}")
+            # Fallback: audio_data might already be an array
+            audio = np.array(audio_data, dtype=np.float32)
+            sr = self.target_sr
         
         # Resample if needed
         if sr != self.target_sr:
