@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vibevoice"
+version = "0.0.1"
+authors = [
+  { name="vibevoice team", email="vibepod@microsoft.com" },
+]
+description = "A model for speech generation with an AR + diffusion architecture."
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    # "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "torch>=2.0.0",
+    "torchaudio",
+    "accelerate",
+    "transformers>=4.38.0",
+    "diffusers",
+    "numpy",
+    "librosa",
+    "scipy",
+    "soundfile",
+    "tqdm",
+    "einops",
+    "vector_quantize_pytorch",
+    "vocos",
+    "peft",
+    "datasets"
+]
+
+
+[project.urls]
+"Homepage" = "https://github.com/microsoft/VibeVoice"
+"Bug Tracker" = "https://github.com/microsoft/VibeVoice/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
