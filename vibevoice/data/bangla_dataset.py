@@ -1,9 +1,7 @@
 import torch
 from torch.utils.data import Dataset
-from datasets import load_dataset
+from datasets import load_dataset, Audio
 import numpy as np
-import io
-import soundfile as sf
 
 class BanglaDataset(Dataset):
     def __init__(self, dataset_name, split="train", config_name=None, processor=None, target_sr=24000):
@@ -20,69 +18,40 @@ class BanglaDataset(Dataset):
         
         print(f"Loading HF dataset: {dataset_name} ({config_name if config_name else 'default'}) split={split}")
         
-        # Load dataset and immediately convert to list to avoid Audio feature decoding issues
-        hf_dataset = load_dataset(dataset_name, config_name, split=split)
+        # Load dataset
+        self.dataset = load_dataset(dataset_name, config_name, split=split)
         
         # Check for required columns
-        if "audio" not in hf_dataset.column_names:
+        if "audio" not in self.dataset.column_names:
             raise ValueError(f"Dataset {dataset_name} does not have an 'audio' column.")
         
+        # Cast audio to target sample rate (uses librosa in datasets 2.21.0)
+        self.dataset = self.dataset.cast_column("audio", Audio(sampling_rate=target_sr))
+        
         # Find text column
-        text_col = "text"
-        if "text" not in hf_dataset.column_names:
+        self.text_col = "text"
+        if "text" not in self.dataset.column_names:
             candidates = ["sentence", "transcription", "normalized_text"]
-            found = False
             for c in candidates:
-                if c in hf_dataset.column_names:
-                    text_col = c
-                    found = True
+                if c in self.dataset.column_names:
+                    self.text_col = c
                     break
-            if not found:
+            else:
                 raise ValueError(f"Dataset {dataset_name} does not have a 'text' column and no alternatives found.")
         
-        # Convert to list of dicts to avoid Audio feature auto-decoding
-        print("Converting dataset to list (this may take a moment)...")
-        self.items = []
-        for item in hf_dataset:
-            self.items.append({
-                "text": item[text_col],
-                "audio": item["audio"]  # This will be a dict with 'path', 'bytes', or 'array'
-            })
-        print(f"Loaded {len(self.items)} items")
+        print(f"Dataset loaded with {len(self.dataset)} items")
 
     def __len__(self):
-        return len(self.items)
+        return len(self.dataset)
 
     def __getitem__(self, idx):
-        item = self.items[idx]
-        text = item['text']
+        item = self.dataset[idx]
+        text = item[self.text_col]
         audio_data = item['audio']
         
-        # audio_data is a dict with 'bytes', 'path', or 'array'
-        if isinstance(audio_data, dict):
-            if 'array' in audio_data and audio_data['array'] is not None:
-                audio = np.array(audio_data['array'], dtype=np.float32)
-                sr = audio_data.get('sampling_rate', self.target_sr)
-            elif 'bytes' in audio_data and audio_data['bytes'] is not None:
-                # Decode from bytes using soundfile
-                audio, sr = sf.read(io.BytesIO(audio_data['bytes']))
-                audio = audio.astype(np.float32)
-            elif 'path' in audio_data and audio_data['path'] is not None:
-                # Load from path
-                audio, sr = sf.read(audio_data['path'])
-                audio = audio.astype(np.float32)
-            else:
-                raise ValueError(f"Could not load audio from item {idx}")
-        else:
-            # Fallback: audio_data might already be an array
-            audio = np.array(audio_data, dtype=np.float32)
-            sr = self.target_sr
+        # audio_data is a dict with 'array' and 'sampling_rate' (decoded by datasets)
+        audio = audio_data['array']
         
-        # Resample if needed
-        if sr != self.target_sr:
-            import librosa
-            audio = librosa.resample(audio, orig_sr=sr, target_sr=self.target_sr)
-
         return {
             "text": text,
             "audio": audio

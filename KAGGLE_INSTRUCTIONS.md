@@ -22,12 +22,6 @@ Copy the following blocks into your Kaggle Notebook cells.
 
 ### Cell 1: Installation
 ```python
-# Install FFmpeg (required for audio decoding)
-!apt-get update && apt-get install -y ffmpeg
-
-# Install torchcodec with proper FFmpeg support
-!pip install torchcodec
-
 # Clone your modified repository
 !git clone https://github.com/SwapniL-afk-now/Bangla-TTS-VibeVoice-0.5B.git
 %cd Bangla-TTS-VibeVoice-0.5B
@@ -35,6 +29,9 @@ Copy the following blocks into your Kaggle Notebook cells.
 # Install dependencies
 !pip install -e .
 !pip install --upgrade accelerate transformers diffusers
+
+# IMPORTANT: Downgrade datasets to version that uses librosa (not torchcodec)
+!pip install datasets==2.21.0 librosa soundfile
 ```
 
 ### Cell 2: Login to Hugging Face (Optional)
