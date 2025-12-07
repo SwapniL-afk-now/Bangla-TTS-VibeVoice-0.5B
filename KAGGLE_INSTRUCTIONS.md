@@ -1,28 +1,12 @@
-# Running VibeVoice Fine-tuning on Kaggle
+# Running VibeVoice Bangla TTS on Kaggle
 
-Since you are modifying the code locally, the best workflow is to push your changes to GitHub and then clone them in Kaggle.
+Complete guide for fine-tuning VibeVoice for Bangla Text-to-Speech on Kaggle T4 GPUs.
 
-## Step 1: Push Code to GitHub
-1. Create a new repository on GitHub (e.g., `vibevoice-bangla`).
-2. Push this entire `VibeVoice-main` folder to that repository.
-   ```bash
-   git init
-   git add .
-   git commit -m "Initial commit with training scripts"
-   git remote add origin https://github.com/YOUR_USERNAME/vibevoice-bangla.git
-   git push -u origin main
-   ```
+## 🚀 Quick Setup
 
-## Step 2: Set up Kaggle Notebook
-1. Create a new Notebook.
-2. In the "Session Options" (right sidebar), set **Accelerator** to **GPU T4 x2**.
-
-## Step 3: Notebook Cells
-Copy the following blocks into your Kaggle Notebook cells.
-
-### Cell 1: Installation
+### Cell 1: Clone & Install
 ```python
-# Clone your modified repository
+# Clone repository
 !git clone https://github.com/SwapniL-afk-now/Bangla-TTS-VibeVoice-0.5B.git
 %cd Bangla-TTS-VibeVoice-0.5B
 
@@ -30,41 +14,84 @@ Copy the following blocks into your Kaggle Notebook cells.
 !pip install -e .
 !pip install --upgrade accelerate transformers diffusers
 
-# IMPORTANT: Install EnCodec for audio encoding + older datasets
+# IMPORTANT: Install EnCodec + compatible datasets version
 !pip install encodec datasets==2.21.0 librosa soundfile
 ```
 
 ### Cell 2: Login to Hugging Face (Optional)
-If using a gated model or private dataset, login here.
 ```python
 from huggingface_hub import login
 from kaggle_secrets import UserSecretsClient
 
-# Recommendation: Store your HF token in Kaggle Secrets (name it 'HF_TOKEN')
 user_secrets = UserSecretsClient()
 hf_token = user_secrets.get_secret("HF_TOKEN")
 login(token=hf_token)
 ```
 
-### Cell 3: Run Training with LoRA
-This command uses the T4 GPUs. LoRA is enabled to save memory.
+---
+
+## 📚 Multi-Stage Training
+
+### Stage 1: Latent Space Alignment (Start Here)
 ```python
-# Run the training script
-# Adjust batch_size if needed (e.g., 1 or 2 per GPU)
 !python train_vibevoice.py \
     --model_path "PTE-VibeVoice/VibeVoice-TTS" \
-    --dataset_name "mozilla-foundation/common_voice_17_0" \
-    --dataset_config "bn" \
-    --dataset_split "train" \
-    --output_dir "/kaggle/working/vibevoice-bangla-model" \
-    --batch_size 4 \
-    --num_epochs 3 \
-    --learning_rate 1e-4 \
-    --use_lora
+    --dataset_name "samikhan121/bangla_tts_iitm" \
+    --training_stage 1 \
+    --output_dir "/kaggle/working/stage1-checkpoint" \
+    --batch_size 2 \
+    --num_epochs 5 \
+    --learning_rate 1e-4
 ```
 
-### Cell 4: Save Outputs
-If training finishes, zipping the model makes it easier to download.
+### Stage 2: Bangla Acoustic Adaptation
 ```python
-!zip -r model_output.zip /kaggle/working/vibevoice-bangla-model
+!python train_vibevoice.py \
+    --model_path "/kaggle/working/stage1-checkpoint" \
+    --dataset_name "samikhan121/bangla_tts_iitm" \
+    --training_stage 2 \
+    --use_lora --lora_rank 8 \
+    --output_dir "/kaggle/working/stage2-checkpoint" \
+    --batch_size 2 \
+    --num_epochs 10 \
+    --learning_rate 5e-5
 ```
+
+### Stage 3: Text-Speech Alignment
+```python
+!python train_vibevoice.py \
+    --model_path "/kaggle/working/stage2-checkpoint" \
+    --dataset_name "samikhan121/bangla_tts_iitm" \
+    --training_stage 3 \
+    --use_lora --lora_rank 16 \
+    --output_dir "/kaggle/working/stage3-checkpoint" \
+    --batch_size 2 \
+    --num_epochs 5 \
+    --learning_rate 2e-5
+```
+
+---
+
+## 💾 Save Model
+```python
+!zip -r bangla_tts_model.zip /kaggle/working/stage3-checkpoint
+```
+
+---
+
+## ⚡ Training Stages Explained
+
+| Stage | Purpose | Duration |
+|-------|---------|----------|
+| 1 | Bridge EnCodec→VibeVoice latent space | ~2-4 hrs |
+| 2 | Learn Bangla acoustic patterns | ~4-8 hrs |
+| 3 | Improve text→speech alignment | ~3-6 hrs |
+| 4 | Final polish (optional) | ~1-2 hrs |
+
+## 🔧 Troubleshooting
+
+**OOM Error?** → Reduce `--batch_size` to 1
+
+**torchcodec Error?** → Ensure `datasets==2.21.0` is installed
+
+**Model won't load?** → Try adding `--ignore_mismatched_sizes`
