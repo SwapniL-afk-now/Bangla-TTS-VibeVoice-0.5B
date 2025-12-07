@@ -61,6 +61,25 @@ class VibeVoiceDataCollator:
     def __init__(self, processor, model):
         self.processor = processor
         self.model = model # Need model for VAE if doing online encoding
+        
+        # Get the actual underlying model (unwrap PEFT if needed)
+        self._base_model = self._get_base_model(model)
+    
+    def _get_base_model(self, model):
+        """Unwrap PEFT/LoRA model to get the underlying VibeVoiceStreamingModel"""
+        # Check if it's a PEFT model
+        if hasattr(model, 'base_model'):
+            # PeftModel -> LoraModel -> VibeVoiceForTraining -> VibeVoiceStreamingModel
+            inner = model.base_model
+            if hasattr(inner, 'model'):
+                inner = inner.model
+            if hasattr(inner, 'model'):
+                inner = inner.model
+            return inner
+        # Check if it's VibeVoiceForTraining directly
+        elif hasattr(model, 'model'):
+            return model.model
+        return model
 
     def __call__(self, features):
         text_list = [f["text"] for f in features]
@@ -103,10 +122,10 @@ class VibeVoiceDataCollator:
                      audio = self.processor.audio_normalizer(audio)
                 
                 # Convert to tensor (1, 1, T)
-                audio_t = torch.tensor(audio).unsqueeze(0).unsqueeze(0).to(self.model.device).float()
+                audio_t = torch.tensor(audio).unsqueeze(0).unsqueeze(0).to(self._base_model.acoustic_tokenizer.device).float()
                 
-                # Encode
-                dist = self.model.acoustic_tokenizer.encode(audio_t)
+                # Encode using the unwrapped base model
+                dist = self._base_model.acoustic_tokenizer.encode(audio_t)
                 latent = dist.sample() # (1, D, T_lat) or (1, T_lat, D)? 
                 # Check VAE dim ordering. 
                 # Usually (B, C, T).
