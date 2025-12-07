@@ -58,12 +58,27 @@ class BanglaDataset(Dataset):
         }
 
 class VibeVoiceDataCollator:
-    def __init__(self, processor, model):
+    def __init__(self, processor, model, target_sr=24000, n_mels=64, hop_length=320):
+        """
+        Args:
+            processor: VibeVoiceProcessor
+            model: VibeVoiceForTraining (possibly wrapped in PEFT)
+            target_sr: Sample rate (24kHz for VibeVoice)
+            n_mels: Number of mel bins (64 to match vae_dim)
+            hop_length: Hop length for STFT (320 = 24000/75 frames per second matches ~7.5Hz rate)
+        """
         self.processor = processor
-        self.model = model # Need model for VAE if doing online encoding
+        self.model = model
+        self.target_sr = target_sr
+        self.n_mels = n_mels
+        self.hop_length = hop_length
         
         # Get the actual underlying model (unwrap PEFT if needed)
         self._base_model = self._get_base_model(model)
+        
+        # Import librosa for mel computation
+        import librosa
+        self.librosa = librosa
     
     def _get_base_model(self, model):
         """Unwrap PEFT/LoRA model to get the underlying VibeVoiceStreamingModel"""
@@ -80,59 +95,64 @@ class VibeVoiceDataCollator:
         elif hasattr(model, 'model'):
             return model.model
         return model
+    
+    def _compute_mel_spectrogram(self, audio):
+        """Compute mel-spectrogram as pseudo-latent representation.
+        
+        Note: VibeVoice uses a custom VAE encoder that is not shipped with the model.
+        We use mel-spectrograms as a substitute for fine-tuning, which provides
+        a similar acoustic representation at the target frame rate.
+        """
+        # Compute mel-spectrogram
+        mel = self.librosa.feature.melspectrogram(
+            y=audio,
+            sr=self.target_sr,
+            n_mels=self.n_mels,
+            hop_length=self.hop_length,
+            n_fft=1024,
+            power=1.0  # Magnitude spectrogram
+        )
+        # Convert to log scale (add small epsilon to avoid log(0))
+        mel_db = self.librosa.amplitude_to_db(mel, ref=1.0, top_db=80.0)
+        
+        # Normalize to roughly [-1, 1] range (mel_db is typically in [-80, 0] range)
+        mel_normalized = (mel_db + 40) / 40  # Shift to [-1, 1] approximately
+        
+        return mel_normalized  # Shape: (n_mels, T)
 
     def __call__(self, features):
         text_list = [f["text"] for f in features]
         audio_list = [f["audio"] for f in features]
         
         # Process Text
-        # We need to manually construct the prompt structure:
-        # System + Text + "Speech Output:"
-        # The processor `__call__` does this:
-        # text input -> "Speaker X: text" -> ...
-        # But here we just have raw text.
-        # Let's treat it as a single speaker "0".
-        
-        # Format for processor:
-        # script = "Speaker 0: " + text
         scripts = [f"Speaker 0: {t}" for t in text_list]
         
         batch = self.processor(
             text=scripts,
-            voice_samples=None, # No voice prompt for training (or maybe use snippet?)
+            voice_samples=None,
             return_tensors="pt",
             padding=True
         )
         
-        # Clean up batch keys
-        # `batch` has `input_ids`, `attention_mask`. 
-        # `processor` adds "Speech output:" and `speech_start_id` at the end. 
-        # This matches our training expectation! 
-        
         # Process Audio (Target)
-        # Encode to Latents
-        # We need to pad audio first? Or encode then pad latents?
-        # Encode -> Pad Latents is better.
-        
+        # Compute mel-spectrograms as pseudo-latents
         latents_list = []
-        with torch.no_grad():
-            for audio in audio_list:
-                # Normalize via processor utils?
-                if self.processor.db_normalize:
-                     audio = self.processor.audio_normalizer(audio)
-                
-                # Convert to tensor (1, 1, T)
-                audio_t = torch.tensor(audio).unsqueeze(0).unsqueeze(0).to(self._base_model.acoustic_tokenizer.device).float()
-                
-                # Encode using the unwrapped base model
-                dist = self._base_model.acoustic_tokenizer.encode(audio_t)
-                latent = dist.sample() # (1, D, T_lat) or (1, T_lat, D)? 
-                # Check VAE dim ordering. 
-                # Usually (B, C, T).
-                
-                # Permute to (T, D) for easier padding
-                latent = latent.squeeze(0).transpose(0, 1) 
-                latents_list.append(latent.cpu())
+        for audio in audio_list:
+            # Normalize audio if needed
+            if self.processor.db_normalize:
+                audio = self.processor.audio_normalizer(audio)
+            
+            # Convert to numpy if needed
+            if isinstance(audio, torch.Tensor):
+                audio = audio.numpy()
+            audio = np.asarray(audio, dtype=np.float32)
+            
+            # Compute mel-spectrogram
+            mel = self._compute_mel_spectrogram(audio)  # (n_mels, T)
+            
+            # Convert to tensor and transpose to (T, D) for padding
+            latent = torch.tensor(mel.T, dtype=torch.float32)  # (T, n_mels)
+            latents_list.append(latent)
                 
         # Pad Latents
         from torch.nn.utils.rnn import pad_sequence
