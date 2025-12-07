@@ -23,7 +23,13 @@ def main():
     parser.add_argument("--lora_alpha", type=int, default=32)
     parser.add_argument("--lora_dropout", type=float, default=0.05)
     parser.add_argument("--report_to", type=str, nargs="*", default=[], help="Reporting integration (wandb/tensorboard). Leave empty to disable.")
+    parser.add_argument("--training_stage", type=int, default=1, choices=[1, 2, 3, 4],
+                        help="Training stage: 1=Latent Alignment, 2=Acoustic Adaptation, 3=Text-Speech Alignment, 4=End-to-End")
     args = parser.parse_args()
+
+    print(f"=" * 60)
+    print(f"Training Stage: {args.training_stage}")
+    print(f"=" * 60)
 
     # Load Config and Model
     print(f"Loading model from {args.model_path}...")
@@ -35,45 +41,52 @@ def main():
         
     model = VibeVoiceForTraining.from_pretrained(args.model_path, config=config, ignore_mismatched_sizes=True)
     
-    if args.use_lora:
-        print("Applying LoRA...")
-        from peft import LoraConfig, get_peft_model, TaskType
+    # Stage-specific LoRA configuration
+    if args.training_stage == 1:
+        # Stage 1: No LoRA, train projection + diffusion head only
+        print("Stage 1: Latent Space Alignment - No LoRA, training projection + acoustic connector + diffusion head")
+        # Freeze all parameters first
+        for param in model.parameters():
+            param.requires_grad = False
+        # Unfreeze: prediction_head, acoustic_connector
+        for param in model.model.prediction_head.parameters():
+            param.requires_grad = True
+        for param in model.model.acoustic_connector.parameters():
+            param.requires_grad = True
+            
+    elif args.training_stage >= 2 and args.use_lora:
+        print(f"Stage {args.training_stage}: Applying LoRA...")
+        from peft import LoraConfig, get_peft_model
         
-        # Define LoRA Config
-        # Target modules: Qwen typically uses "q_proj", "v_proj" etc.
-        # We target the language models.
-        # `model.language_model` (base) and `model.tts_language_model` (tts).
-        # We can target all linear layers in them.
-        
+        # Stage 2: LoRA on TTS LM only
+        # Stage 3+: LoRA on both LMs
         target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
         
+        lora_r = args.lora_rank if args.training_stage == 2 else 16
+        
         lora_config = LoraConfig(
-            r=args.lora_rank,
+            r=lora_r,
             lora_alpha=args.lora_alpha,
             target_modules=target_modules,
             lora_dropout=args.lora_dropout,
             bias="none",
-            task_type=None, # Custom model
+            task_type=None,
         )
         
-        # Get PEFT model
-        # Note: VibeVoiceForTraining is a wrapper. We can apply PEFT to the submodules or the whole wrapper.
-        # Applying to whole wrapper is easiest, targeting specific module names.
         model = get_peft_model(model, lora_config)
         
-        # Ensure Diffusion Head is TRAINABLE (unless we want to freeze it too?)
-        # For TTS fine-tuning, usually the diffusion head needs adaptation.
-        # LoRA freezes all non-adapter parameters.
-        # We should unfreeze the diffusion head if we want to train it fully.
-        
-        # model.model.prediction_head.requires_grad_(True) 
-        # But `get_peft_model` freezes everything.
-        
+        # Unfreeze diffusion head
         for name, param in model.base_model.model.model.prediction_head.named_parameters():
-             param.requires_grad = True
+            param.requires_grad = True
+        # Unfreeze acoustic connector
+        for name, param in model.base_model.model.model.acoustic_connector.named_parameters():
+            param.requires_grad = True
              
-        print("LoRA applied. Trainable parameters:")
+        print(f"LoRA applied (r={lora_r}). Trainable parameters:")
         model.print_trainable_parameters()
+    else:
+        # Stage 2+ without LoRA - train everything
+        print("Training all parameters (no LoRA)")
         
     # Load Processor
     processor = VibeVoiceProcessor.from_pretrained(args.model_path)
@@ -87,12 +100,16 @@ def main():
         processor=processor
     )
     
-    # Data Collator (needs model for on-the-fly VAE encoding)
-    # Note: On-the-fly VAE inside main process might be slow. 
-    # Move model to GPU?
+    # Data Collator (needs model for on-the-fly encoding)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
     collator = VibeVoiceDataCollator(processor, model)
+    
+    # Stage 1: Also make EnCodec projection layer trainable
+    if args.training_stage == 1 and hasattr(collator, 'encodec_projection'):
+        print("Making EnCodec projection layer trainable...")
+        for param in collator.encodec_projection.parameters():
+            param.requires_grad = True
 
     # Training Args
     training_args = TrainingArguments(
