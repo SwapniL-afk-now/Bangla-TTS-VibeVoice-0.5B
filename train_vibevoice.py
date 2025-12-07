@@ -22,6 +22,7 @@ def main():
     parser.add_argument("--lora_rank", type=int, default=8)
     parser.add_argument("--lora_alpha", type=int, default=32)
     parser.add_argument("--lora_dropout", type=float, default=0.05)
+    parser.add_argument("--report_to", type=str, default="none", help="Reporting integration (wandb/tensorboard/none)")
     args = parser.parse_args()
 
     # Load Config and Model
@@ -101,6 +102,7 @@ def main():
         learning_rate=args.learning_rate,
         logging_steps=10,
         save_steps=500,
+        report_to=args.report_to,
         remove_unused_columns=False, # Critical for custom collator keys
         label_names=["speech_values"] # Prevent trainer from stripping 'labels' if we had them?
         # We don't have 'labels' key, we have 'speech_values'.
