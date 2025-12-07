@@ -235,8 +235,9 @@ class VibeVoiceForTraining(VibeVoiceStreamingPreTrainedModel):
         # Sample noise and timesteps
         noise = torch.randn_like(latents_flat)
         timesteps = torch.randint(0, self.model.noise_scheduler.config.num_train_timesteps, (B*T,), device=latents_flat.device)
+        timesteps = timesteps.float()  # Convert to float for timestep embedder
         
-        noisy_latents = self.model.noise_scheduler.add_noise(latents_flat, noise, timesteps)
+        noisy_latents = self.model.noise_scheduler.add_noise(latents_flat, noise, timesteps.long())  # add_noise expects long
         
         # Predict
         predicted_noise = self.model.prediction_head(
