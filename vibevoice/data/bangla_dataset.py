@@ -22,8 +22,11 @@ class BanglaDataset(Dataset):
         # Load without decoding audio to avoid torchcodec dependency
         self.dataset = load_dataset(dataset_name, config_name, split=split)
         
-        # Don't cast audio column - we'll decode manually
-        if "audio" not in self.dataset.features:
+        # Keep audio as raw data (don't decode) - we'll handle it manually
+        # This prevents the datasets library from trying to use torchcodec
+        self.dataset.reset_format()
+        
+        if "audio" not in self.dataset.column_names:
              raise ValueError(f"Dataset {dataset_name} does not have an 'audio' column.")
              
         if "text" not in self.dataset.features:
