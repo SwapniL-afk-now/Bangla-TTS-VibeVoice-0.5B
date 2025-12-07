@@ -23,6 +23,9 @@ from vibevoice.schedule.dpm_solver import DPMSolverMultistepScheduler
 from .configuration_vibevoice_streaming import VibeVoiceStreamingConfig
 
 
+from .modular_vibevoice_tokenizer import VibeVoiceAcousticTokenizerModel
+from .modular_vibevoice_diffusion_head import VibeVoiceDiffusionHead
+
 logger = logging.get_logger(__name__)
 
 if not hasattr(modeling_utils, "ALL_PARALLEL_STYLES") or modeling_utils.ALL_PARALLEL_STYLES is None:
@@ -122,7 +125,8 @@ class VibeVoiceStreamingModel(VibeVoiceStreamingPreTrainedModel):
         self.tts_input_types = nn.Embedding(num_embeddings=2, embedding_dim=config.decoder_config.hidden_size)
         
         # Initialize speech components if needed
-        self.acoustic_tokenizer = AutoModel.from_config(config.acoustic_tokenizer_config).to(dtype)
+        # self.acoustic_tokenizer = AutoModel.from_config(config.acoustic_tokenizer_config).to(dtype)
+        self.acoustic_tokenizer = VibeVoiceAcousticTokenizerModel(config.acoustic_tokenizer_config).to(dtype)
         self.acoustic_connector = SpeechConnector(config.acoustic_vae_dim, lm_config.hidden_size).to(dtype)
         
         # Register scaling factors as buffers - use 1D tensors for FSDP compatibility
@@ -130,7 +134,8 @@ class VibeVoiceStreamingModel(VibeVoiceStreamingPreTrainedModel):
         self.register_buffer('speech_bias_factor', torch.tensor(float('nan')))
 
         # Initialize prediction head for speech generation
-        self.prediction_head = AutoModel.from_config(config.diffusion_head_config).to(dtype)
+        # self.prediction_head = AutoModel.from_config(config.diffusion_head_config).to(dtype)
+        self.prediction_head = VibeVoiceDiffusionHead(config.diffusion_head_config).to(dtype)
 
         # Initialize noise scheduler
         self.noise_scheduler = DPMSolverMultistepScheduler(
