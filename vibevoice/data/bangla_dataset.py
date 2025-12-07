@@ -58,73 +58,116 @@ class BanglaDataset(Dataset):
         }
 
 class VibeVoiceDataCollator:
-    def __init__(self, processor, model, target_sr=24000, n_mels=64, hop_length=320):
+    def __init__(self, processor, model, target_sr=24000, use_encodec=True):
         """
         Args:
             processor: VibeVoiceProcessor
             model: VibeVoiceForTraining (possibly wrapped in PEFT)
             target_sr: Sample rate (24kHz for VibeVoice)
-            n_mels: Number of mel bins (64 to match vae_dim)
-            hop_length: Hop length for STFT (320 = 24000/75 frames per second matches ~7.5Hz rate)
+            use_encodec: Whether to use EnCodec for encoding (recommended)
         """
         self.processor = processor
         self.model = model
         self.target_sr = target_sr
-        self.n_mels = n_mels
-        self.hop_length = hop_length
+        self.use_encodec = use_encodec
         
         # Get the actual underlying model (unwrap PEFT if needed)
         self._base_model = self._get_base_model(model)
+        self.device = next(self._base_model.parameters()).device
         
-        # Import librosa for mel computation
-        import librosa
-        self.librosa = librosa
+        # Initialize EnCodec encoder if requested
+        if use_encodec:
+            self._init_encodec_encoder()
+        else:
+            import librosa
+            self.librosa = librosa
+    
+    def _init_encodec_encoder(self):
+        """Initialize EnCodec encoder with projection layer for dimension matching."""
+        try:
+            from encodec import EncodecModel
+            from encodec.utils import convert_audio
+            
+            # Load 24kHz bandwidth 24 model
+            self.encodec = EncodecModel.encodec_model_24khz()
+            self.encodec.set_target_bandwidth(6.0)  # Use 6kbps for good quality
+            self.encodec.eval()
+            self.encodec.to(self.device)
+            
+            # EnCodec outputs 128-dim latents, VibeVoice needs 64-dim
+            # Create a simple projection layer
+            self.encodec_projection = torch.nn.Linear(128, 64).to(self.device)
+            # Initialize with PCA-like dimensionality reduction (just use first 64 dims initially)
+            with torch.no_grad():
+                self.encodec_projection.weight.data = torch.eye(64, 128).to(self.device)
+                self.encodec_projection.bias.data.zero_()
+            
+            self.convert_audio = convert_audio
+            print("EnCodec encoder initialized successfully (128->64 projection)")
+            
+        except ImportError:
+            print("Warning: EnCodec not available, falling back to mel-spectrograms")
+            self.use_encodec = False
+            import librosa
+            self.librosa = librosa
     
     def _get_base_model(self, model):
         """Unwrap PEFT/LoRA model to get the underlying VibeVoiceStreamingModel"""
-        # Check if it's a PEFT model
         if hasattr(model, 'base_model'):
-            # PeftModel -> LoraModel -> VibeVoiceForTraining -> VibeVoiceStreamingModel
             inner = model.base_model
             if hasattr(inner, 'model'):
                 inner = inner.model
             if hasattr(inner, 'model'):
                 inner = inner.model
             return inner
-        # Check if it's VibeVoiceForTraining directly
         elif hasattr(model, 'model'):
             return model.model
         return model
     
-    def _compute_mel_spectrogram(self, audio):
-        """Compute mel-spectrogram as pseudo-latent representation.
+    def _encode_audio_encodec(self, audio):
+        """Encode audio using EnCodec encoder + projection."""
+        # Convert to tensor
+        if isinstance(audio, np.ndarray):
+            audio_t = torch.tensor(audio, dtype=torch.float32)
+        else:
+            audio_t = audio.float()
         
-        Note: VibeVoice uses a custom VAE encoder that is not shipped with the model.
-        We use mel-spectrograms as a substitute for fine-tuning, which provides
-        a similar acoustic representation at the target frame rate.
-        """
-        # Compute mel-spectrogram
+        # Ensure shape is (1, 1, T) for EnCodec
+        if audio_t.dim() == 1:
+            audio_t = audio_t.unsqueeze(0).unsqueeze(0)
+        elif audio_t.dim() == 2:
+            audio_t = audio_t.unsqueeze(0)
+        
+        audio_t = audio_t.to(self.device)
+        
+        # Get encoder output (continuous latents before quantization)
+        with torch.no_grad():
+            # EnCodec encoder returns continuous latent
+            emb = self.encodec.encoder(audio_t)  # (1, 128, T_latent)
+            # Project 128 -> 64
+            emb = emb.permute(0, 2, 1)  # (1, T, 128)
+            emb = self.encodec_projection(emb)  # (1, T, 64)
+        
+        return emb.squeeze(0)  # (T, 64)
+    
+    def _encode_audio_mel(self, audio):
+        """Fallback: encode audio using mel-spectrogram."""
+        if isinstance(audio, torch.Tensor):
+            audio = audio.numpy()
+        audio = np.asarray(audio, dtype=np.float32)
+        
         mel = self.librosa.feature.melspectrogram(
-            y=audio,
-            sr=self.target_sr,
-            n_mels=self.n_mels,
-            hop_length=self.hop_length,
-            n_fft=1024,
-            power=1.0  # Magnitude spectrogram
+            y=audio, sr=self.target_sr, n_mels=64,
+            hop_length=320, n_fft=1024, power=1.0
         )
-        # Convert to log scale (add small epsilon to avoid log(0))
         mel_db = self.librosa.amplitude_to_db(mel, ref=1.0, top_db=80.0)
-        
-        # Normalize to roughly [-1, 1] range (mel_db is typically in [-80, 0] range)
-        mel_normalized = (mel_db + 40) / 40  # Shift to [-1, 1] approximately
-        
-        return mel_normalized  # Shape: (n_mels, T)
+        mel_normalized = (mel_db + 40) / 40
+        return torch.tensor(mel_normalized.T, dtype=torch.float32)
 
     def __call__(self, features):
         text_list = [f["text"] for f in features]
         audio_list = [f["audio"] for f in features]
         
-        # Process Text
         scripts = [f"Speaker 0: {t}" for t in text_list]
         
         batch = self.processor(
@@ -134,25 +177,18 @@ class VibeVoiceDataCollator:
             padding=True
         )
         
-        # Process Audio (Target)
-        # Compute mel-spectrograms as pseudo-latents
+        # Encode audio to latents
         latents_list = []
         for audio in audio_list:
-            # Normalize audio if needed
             if self.processor.db_normalize:
                 audio = self.processor.audio_normalizer(audio)
             
-            # Convert to numpy if needed
-            if isinstance(audio, torch.Tensor):
-                audio = audio.numpy()
-            audio = np.asarray(audio, dtype=np.float32)
+            if self.use_encodec:
+                latent = self._encode_audio_encodec(audio)
+            else:
+                latent = self._encode_audio_mel(audio)
             
-            # Compute mel-spectrogram
-            mel = self._compute_mel_spectrogram(audio)  # (n_mels, T)
-            
-            # Convert to tensor and transpose to (T, D) for padding
-            latent = torch.tensor(mel.T, dtype=torch.float32)  # (T, n_mels)
-            latents_list.append(latent)
+            latents_list.append(latent.cpu())
                 
         # Pad Latents
         from torch.nn.utils.rnn import pad_sequence

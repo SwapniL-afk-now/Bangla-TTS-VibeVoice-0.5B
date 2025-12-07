@@ -31,7 +31,8 @@ dependencies = [
     "vector_quantize_pytorch",
     "vocos",
     "peft",
-    "datasets"
+    "datasets",
+    "encodec",
 ]
 
 

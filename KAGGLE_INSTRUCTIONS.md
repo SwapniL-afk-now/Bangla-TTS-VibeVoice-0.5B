@@ -30,8 +30,8 @@ Copy the following blocks into your Kaggle Notebook cells.
 !pip install -e .
 !pip install --upgrade accelerate transformers diffusers
 
-# IMPORTANT: Downgrade datasets to version that uses librosa (not torchcodec)
-!pip install datasets==2.21.0 librosa soundfile
+# IMPORTANT: Install EnCodec for audio encoding + older datasets
+!pip install encodec datasets==2.21.0 librosa soundfile
 ```
 
 ### Cell 2: Login to Hugging Face (Optional)
