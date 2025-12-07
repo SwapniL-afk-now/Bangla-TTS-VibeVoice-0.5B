@@ -138,13 +138,19 @@ class VibeVoiceTrainer(Trainer):
         # Combine losses
         total_loss = self.diffusion_loss_weight * diffusion_loss + self.ce_loss_weight * ce_loss
         
-        # Log individual losses
+        # Log individual losses (use .mean() for multi-GPU compatibility)
         if self.state.global_step % 10 == 0:
-            self.log({
-                "diffusion_loss": diffusion_loss.detach().item(),
-                "ce_loss": ce_loss.detach().item() if isinstance(ce_loss, torch.Tensor) else ce_loss,
-                "total_loss": total_loss.detach().item(),
-            })
+            try:
+                diff_val = diffusion_loss.detach().mean().item() if diffusion_loss.numel() > 1 else diffusion_loss.detach().item()
+                ce_val = ce_loss.detach().mean().item() if isinstance(ce_loss, torch.Tensor) and ce_loss.numel() > 1 else (ce_loss.detach().item() if isinstance(ce_loss, torch.Tensor) else ce_loss)
+                total_val = total_loss.detach().mean().item() if total_loss.numel() > 1 else total_loss.detach().item()
+                self.log({
+                    "diffusion_loss": diff_val,
+                    "ce_loss": ce_val,
+                    "total_loss": total_val,
+                })
+            except Exception:
+                pass  # Skip logging if it fails
         
         if return_outputs:
             return total_loss, outputs
