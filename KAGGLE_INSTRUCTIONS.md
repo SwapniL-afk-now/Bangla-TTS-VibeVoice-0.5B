@@ -29,7 +29,6 @@ Copy the following blocks into your Kaggle Notebook cells.
 # Install dependencies (including peft, datasets, updated in pyproject.toml)
 !pip install -e .
 !pip install --upgrade accelerate transformers diffusers
-!pip install torchcodec  # Required for audio decoding in datasets library
 ```
 
 ### Cell 2: Login to Hugging Face (Optional)

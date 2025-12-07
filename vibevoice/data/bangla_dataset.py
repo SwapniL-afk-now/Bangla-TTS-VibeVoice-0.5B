@@ -1,7 +1,9 @@
 import torch
 from torch.utils.data import Dataset
-from datasets import load_dataset, Audio
+from datasets import load_dataset
 import numpy as np
+import io
+import soundfile as sf
 
 class BanglaDataset(Dataset):
     def __init__(self, dataset_name, split="train", config_name=None, processor=None, target_sr=24000):
@@ -17,17 +19,15 @@ class BanglaDataset(Dataset):
         self.target_sr = target_sr
         
         print(f"Loading HF dataset: {dataset_name} ({config_name if config_name else 'default'}) split={split}")
+        # Load without decoding audio to avoid torchcodec dependency
         self.dataset = load_dataset(dataset_name, config_name, split=split)
         
-        # Ensure audio column is cast to Audio feature with correct SR
-        if "audio" in self.dataset.features:
-            self.dataset = self.dataset.cast_column("audio", Audio(sampling_rate=target_sr))
-        else:
+        # Don't cast audio column - we'll decode manually
+        if "audio" not in self.dataset.features:
              raise ValueError(f"Dataset {dataset_name} does not have an 'audio' column.")
              
         if "text" not in self.dataset.features:
              # Try to find a text column
-             # common names: sentence, transcription, text
              candidates = ["sentence", "transcription", "normalized_text"]
              found = False
              for c in candidates:
@@ -44,15 +44,27 @@ class BanglaDataset(Dataset):
     def __getitem__(self, idx):
         item = self.dataset[idx]
         text = item['text']
-        audio_data = item['audio'] # Dict with 'array' and 'sampling_rate'
+        audio_data = item['audio']
         
-        audio = audio_data['array']
-        sr = audio_data['sampling_rate']
+        # audio_data is a dict with 'bytes', 'path', or 'array'
+        if 'array' in audio_data and audio_data['array'] is not None:
+            audio = np.array(audio_data['array'], dtype=np.float32)
+            sr = audio_data.get('sampling_rate', self.target_sr)
+        elif 'bytes' in audio_data and audio_data['bytes'] is not None:
+            # Decode from bytes using soundfile
+            audio, sr = sf.read(io.BytesIO(audio_data['bytes']))
+            audio = audio.astype(np.float32)
+        elif 'path' in audio_data and audio_data['path'] is not None:
+            # Load from path
+            audio, sr = sf.read(audio_data['path'])
+            audio = audio.astype(np.float32)
+        else:
+            raise ValueError(f"Could not load audio from item {idx}")
         
-        # Verify SR (should be correct due to cast_column but safe to check)
+        # Resample if needed
         if sr != self.target_sr:
-             # Should not happen with cast_column
-             pass
+            import librosa
+            audio = librosa.resample(audio, orig_sr=sr, target_sr=self.target_sr)
 
         return {
             "text": text,
